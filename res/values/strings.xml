@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Commons</string>
+    <string name="service_started">Playing</string>
+    
+    <string name="service_name"></string>
+</resources>

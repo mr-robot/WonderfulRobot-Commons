@@ -38,8 +38,10 @@ import android.net.Uri;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiManager.WifiLock;
 import android.os.Binder;
+import android.os.Handler;
 import android.os.IBinder;
 import android.os.PowerManager;
+import android.os.SystemClock;
 import android.util.Log;
 import android.widget.Toast;
 
@@ -147,6 +149,8 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
     // constants exist in our class is a mere convenience: what really defines the actions our
     // service can handle are the <action> tags in the <intent-filters> tag for our service in
     // AndroidManifest.xml.
+    public static final String ACTION_RELOAD = "com.wonderfulrobot.commons.music.musicplayerservice.action.RELOAD";
+    
     public static final String ACTION_PLAY = "com.wonderfulrobot.commons.music.musicplayerservice.action.PLAY";
     public static final String ACTION_PAUSE = "com.wonderfulrobot.commons.music.musicplayerservice.action.PAUSE";
     public static final String ACTION_STOP = "com.wonderfulrobot.commons.music.musicplayerservice.action.STOP";
@@ -175,6 +179,11 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
     
     private ArrayList<MusicPlayerServiceListener> listeners = new ArrayList<MusicPlayerServiceListener>();
 	private Track mCurrentTrack;
+	
+
+	private long lastActionTime=0L;
+	private Handler mCurrentPositionHandler;
+	private boolean hasRetried;
 
     /**
      * Makes sure the media player exists and has been reset. This will create the media player
@@ -212,6 +221,9 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
 
         mNotificationManager = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         
+
+		mCurrentPositionHandler = new Handler();
+		
         
         try {
             mStartForeground = getClass().getMethod("startForeground",
@@ -270,18 +282,26 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
     	if(intent != null && intent.getAction() != null){
             String action = intent.getAction();
             if (action.equals(ACTION_PLAY)) processPlayRequest();
+            else if (action.equals(ACTION_RELOAD)) processReloadRequest();
             else if (action.equals(ACTION_PAUSE)) processPauseRequest();
             else if (action.equals(ACTION_SKIP)) processSkipRequest();
+            else if (action.equals(ACTION_PREVIOUS)) processPreviousRequest();
             else if (action.equals(ACTION_STOP)) processStopRequest();
             else if (action.equals(ACTION_REWIND)) processRewindRequest();
             else if (action.equals(ACTION_URL)) processAddRequest(intent);
     	}
     }
     
-    public void setListener(MusicPlayerServiceListener mListener){
+    public void setListener(MusicPlayerServiceListener mListener, boolean syncState){
     	if(mListener != null){
-    		listeners.add(mListener);
+    		if(!listeners.contains(mListener))
+    			listeners.add(mListener);
     	}
+
+		if(syncState){
+			setListenerState();
+		}
+    	
     }
     
 
@@ -291,6 +311,14 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
     	}
     }
     
+    void processReloadRequest() {
+        if (mState == State.Playing || mState == State.Paused) {
+            mState = State.Stopped;           
+        }
+        
+        processPlayRequest();
+    }
+
 
     void processPlayRequest() {
         if (mState == State.Retrieving) {
@@ -352,7 +380,7 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
             playSong(true,true);
         }
     }
-
+    
     void processStopRequest() {
         if (mState == State.Playing || mState == State.Paused) {
             mState = State.Stopped;
@@ -415,6 +443,10 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
             mPlayer.setVolume(1.0f, 1.0f); // we can be loud
 
         if (!mPlayer.isPlaying()) mPlayer.start();
+        
+
+
+		mCurrentPositionHandler.postDelayed(onEverySecond, 1000);
     }
 
     void processAddRequest(Intent intent) {
@@ -518,7 +550,7 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
 
         try {
 
-            mIsStreaming = true; // playing a locally available song
+            mIsStreaming = true; // playing a remote song
 
             //MusicRetriever.Item item = mRetriever.getRandomItem();
             
@@ -538,7 +570,7 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
             //We could be getting the track asynchronously, just return if we don't have a track
             if (track == null) {
                 //say("No song to play :-(");
-            	say("No Track to play!");
+            	//say("No Track to play!");
                 return;
             }
             
@@ -593,6 +625,7 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
         // The media player is done preparing. That means we can start playing!
     	Log.d(TAG, "onPrepared");
         mState = State.Playing;
+    	hasRetried = false;
         //notifyCurrentState(mState);
         setListenerState();
         updateNotification(mSongTitle + " (playing)");
@@ -698,17 +731,23 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
             Toast.LENGTH_SHORT).show();
         Log.e(TAG, "Error: what=" + String.valueOf(what) + ", extra=" + String.valueOf(extra));
 
-        mState = State.Stopped;
-        notifyCurrentState(mState);
-        notifySetError("Music Player Error");
-        relaxResources(true);
-        giveUpAudioFocus();
+        if(!hasRetried){
+        	hasRetried = true;
+        	playSong(mCurrentTrack);
+        }
+        else{
+	        mState = State.Stopped;
+	        notifyCurrentState(mState);
+	        notifySetError("Music Player Error");
+	        relaxResources(true);
+	        giveUpAudioFocus();
+        }
         return true; // true indicates we handled the error
     }
 
     @Override
     public void onGainedAudioFocus() {
-        Toast.makeText(getApplicationContext(), "gained audio focus.", Toast.LENGTH_SHORT).show();
+        //Toast.makeText(getApplicationContext(), "gained audio focus.", Toast.LENGTH_SHORT).show();
         mAudioFocus = AudioFocus.Focused;
 
         // restart media player with new focus settings
@@ -718,8 +757,8 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
 
     @Override
     public void onLostAudioFocus(boolean canDuck) {
-        Toast.makeText(getApplicationContext(), "lost audio focus." + (canDuck ? "can duck" :
-            "no duck"), Toast.LENGTH_SHORT).show();
+        // Toast.makeText(getApplicationContext(), "lost audio focus." + (canDuck ? "can duck" :
+        //    "no duck"), Toast.LENGTH_SHORT).show();
         mAudioFocus = canDuck ? AudioFocus.NoFocusCanDuck : AudioFocus.NoFocusNoDuck;
 
         // start/restart/pause media player with new focus settings
@@ -802,12 +841,19 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
     public void onDestroy() {
         // Service is being killed, so make sure we release our resources
         mState = State.Stopped;
+        closeHandler();
         notifyCurrentState(mState);
         relaxResources(true);
         giveUpAudioFocus();
     }
 
-    @Override
+    private void closeHandler() {
+    	if(onEverySecond != null){
+    		mCurrentPositionHandler.removeCallbacks(onEverySecond);
+    	}
+	}
+
+	@Override
     public IBinder onBind(Intent arg0) {
         return mBinder;
     }
@@ -817,6 +863,29 @@ public class MusicPlayerService extends Service implements OnCompletionListener,
             return MusicPlayerService.this;
         }
     }
+    
+
+	 private Runnable onEverySecond=new Runnable() {
+		 public void run() {
+			 if (lastActionTime>0 &&
+			 SystemClock.elapsedRealtime()-lastActionTime>3000) {
+	
+			 }
+	
+			 if (mPlayer!=null && mPlayer.isPlaying()) {
+			 //timeline.setProgress(mLocalService.getCurrentPosition());
+			 
+				notifyCurrentPosition(mPlayer.getCurrentPosition());
+	
+				//notifyCurrentState(state).setIsPlaying(mPlayer.isPlaying());
+			 
+			 }
+	
+		 //if (!isPaused) {
+			 mCurrentPositionHandler.postDelayed(onEverySecond, 1000);
+		 //}
+		 }
+	 };
 
 
 

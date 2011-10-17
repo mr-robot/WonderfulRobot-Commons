@@ -16,7 +16,7 @@ public class GoogleAnalyticsSessionManager {
     protected static GoogleAnalyticsSessionManager INSTANCE;
 
     protected int activityCount = 0;
-    protected Integer dispatchIntervalSecs;
+    protected Integer dispatchIntervalSecs = 20;
     protected String apiKey;
     protected Context context;
 
